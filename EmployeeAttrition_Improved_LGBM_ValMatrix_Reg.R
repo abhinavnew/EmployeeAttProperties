@@ -36,11 +36,11 @@ flattenCorrMatrix <- function(cormat, pmat) {
 }
 
 empdata_orig=fread("E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\ibm-hr-analytics-employee-attrition-performance\\WA_Fn-UseC_-HR-Employee-Attrition.csv",
-                    data.table = FALSE,
-                    colClasses =c("integer","factor","factor","integer","factor","integer","integer","factor","integer","integer",                                  
-                                  "integer","factor","integer","factor","factor","factor","factor","factor","integer","integer",
-                                   "integer","factor","factor","integer","factor","factor","integer","factor","integer","integer",
-                                  "factor","integer","integer","integer","integer" ))
+                   data.table = FALSE,
+                   colClasses =c("integer","factor","factor","integer","factor","integer","integer","factor","integer","integer",                                  
+                                 "integer","factor","integer","factor","factor","factor","factor","factor","integer","integer",
+                                 "integer","factor","factor","integer","factor","factor","integer","factor","integer","integer",
+                                 "factor","integer","integer","integer","integer" ))
 
 
 empdata=empdata_orig
@@ -76,7 +76,7 @@ res=cor(empdata)
 a=round(res,2)
 write.csv(a,"E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\a.csv")
 
-res2=rcorr(as.matrix(Train_Set))
+res2=rcorr(as.matrix(Train_set))
 flattenCorrMatrix(res2$r,res2$P)
 
 tmp=cor(empdata)
@@ -90,41 +90,55 @@ dim(empdata)
 ##should be less columns now than before
 
 
+##Check for missing values 
+
+##apply(is.na(empdata),2,sum)
+
+a=colnames(empdata)[colSums(is.na(empdata)>0)]
+a
+rowSums(is.na(empdata))
+
+
+
 
 ##breaking data into Train+validate and TEST sets
 splitt1=sample.split(empdata$Attrition,SplitRatio = 0.6)
 TV_set=subset(empdata,splitt1==TRUE)
 Test_set=subset(empdata,splitt1==FALSE)
 
+splitt2=sample.split(TV_set$Attrition,SplitRatio = 0.7)
+Train_set=subset(TV_set,splitt2==TRUE)
+Validate_set=subset(TV_set,splitt2==FALSE)
 
-##splitt2=sample.split(TV_set$Attrition,SplitRatio = 0.7)
-##Train_Set=subset(TV_set,splitt2==TRUE)
-##Validate_set=subset(TV_set,splitt2==FALSE)
+dim(Train_set)
+dim(Validate_set)
+dim(Test_set)
 
-
-##dim(Train_Set)
-##dim(Validate_set)
-##dim(Test_set)
-
-
-##nrow(Train_Set)+nrow(Validate_set)+nrow(Test_set)
+nrow(Train_set)+nrow(Validate_set)+nrow(Test_set)
 ## should be = 1470
 
-nrow(TV_set)+nrow(Test_set)
-
-glimpse(TV_set)
 
 
 
-tr_labels=TV_set[,"Attrition"]
-TV_set$Attrition <- NULL
-x=as.matrix(TV_set)
+tr_labels=Train_set[,"Attrition"]
+Train_set$Attrition <- NULL
+x=as.matrix(Train_set)
 x=matrix(as.numeric(x),nrow(x),ncol(x))
-dtrain=xgb.DMatrix(data=as.matrix(TV_set),label=tr_labels,missing = NA)
+dtrain=xgb.DMatrix(data=x,label=tr_labels,missing = NA)
+
+tv_labels=Validate_set[,"Attrition"]
+Validate_set$Attrition<-NULL
+v=as.matrix(Validate_set)
+v=matrix(as.numeric(v),nrow(v),ncol(y))
+dvalidate=xgb.DMatrix(data=v,label=tv_labels,missing = NA)
 
 
+actual_labels=Test_set[,"Attrition"]
+Test_set$Attrition <-NA
+head(Test_set)
 ts_labels=Test_set[,"Attrition"]
 Test_set$Attrition <-NULL
+
 dtest=xgb.DMatrix(data=as.matrix(Test_set),label=ts_labels,missing = NA)
 
 param=list(booster="gblinear",
@@ -135,15 +149,15 @@ param=list(booster="gblinear",
            lambda_bias=0,
            alpha=2)
 
-watch=list(train=dtrain,test=dtest)
+watch=list(train=dtrain,test=dvalidate)
 set.seed(115)
-fitcv=xgb.cv(params = param,
-             data=dtrain,
-             nrounds = 100000,
-             watchlist=watch,
-             nfold = 5,
-             early_stopping_rounds = 100,
-             verbose = 2)
+##fitcv=xgb.cv(params = param,
+            ## data=dtrain,
+             ##nrounds = 100000,
+            ## watchlist=watch,
+             ##nfold = 5,
+            ## early_stopping_rounds = 10,
+             ##verbose = 2)
 
 ##xgboost main model
 
@@ -151,27 +165,27 @@ fitcv=xgb.cv(params = param,
 xgb_mod1=xgb.train(params = param,
                    data=dtrain,
                    watchlist = watch,
-                   nrounds = 500,
+                   nrounds = 600,
                    verbose = 1)
 
 
 ##making predictions on unseen data
 
-pred=predict(xgb_mod1,newdata=dtest)
+pred=predict(xgb_mod1,newdata=dvalidate)
 
 length(pred)
 
 ## creating roc /auc and making class predictions based on best threshold
-res.roc=roc(ts_labels,pred)
+res.roc=roc(tv_labels,pred)
 
 plot.roc(res.roc,print.auc = TRUE,print.thres = "best")
-t=coords(res.roc,"best","threshold")
+t=coords(res.roc,"best","threshold",transpose = FALSE)
 thresh=t[1]
 auc(res.roc)
 
 pred_classes=ifelse(pred>thresh,1,0)
 
-finaldf=data.frame(predicted=pred_classes,actuals=ts_labels)
+finaldf=data.frame(predicted=pred_classes,actuals=tv_labels)
 table(finaldf$predicted,finaldf$actuals)
 
 
