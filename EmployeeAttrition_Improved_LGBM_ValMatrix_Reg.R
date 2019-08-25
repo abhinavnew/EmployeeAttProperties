@@ -16,6 +16,8 @@ library(lightgbm)
 library(TeachingDemos)
 library(Hmisc)
 library(pROC)
+library(DMwR)
+library(e1071)
 
 
 ##Notations off and clear all objects
@@ -103,43 +105,82 @@ rowSums(is.na(empdata))
 
 ##breaking data into Train+validate and TEST sets
 splitt1=sample.split(empdata$Attrition,SplitRatio = 0.6)
-TV_set=subset(empdata,splitt1==TRUE)
+Train_set=subset(empdata,splitt1==TRUE)
 Test_set=subset(empdata,splitt1==FALSE)
 
-splitt2=sample.split(TV_set$Attrition,SplitRatio = 0.7)
-Train_set=subset(TV_set,splitt2==TRUE)
-Validate_set=subset(TV_set,splitt2==FALSE)
+##splitt2=sample.split(TV_set$Attrition,SplitRatio = 0.7)
+##Train_set=subset(TV_set,splitt2==TRUE)
+##Validate_set=subset(TV_set,splitt2==FALSE)
 
-dim(Train_set)
-dim(Validate_set)
-dim(Test_set)
+##dim(Train_set)
+##dim(Validate_set)
+##dim(Test_set)
 
-nrow(Train_set)+nrow(Validate_set)+nrow(Test_set)
+nrow(Train_set)+nrow(Test_set)
 ## should be = 1470
 
+table(Train_set$Attrition)
+table(Test_set$Attrition)
+
+##SMOTE'd trainset 
+
+newtrain=Train_set
+
+Classcount=table(newtrain$Attrition)
+
+# Over Sampling
+over = ( (0.6 * max(Classcount)) - min(Classcount) ) / min(Classcount)
+# Under Sampling
+under = (0.4 * max(Classcount)) / (min(Classcount) * over)
+
+over = round(over, 1) * 100
+under = round(under, 1) * 100
+#Generate the balanced data set
+
+newtrain$Attrition <- as.factor(newtrain$Attrition)
+
+newtrain=SMOTE(Attrition ~ .,data=newtrain,perc.over = over,perc.under = under,k=5)
 
 
+prop.table(table(newtrain$Attrition))
 
-tr_labels=Train_set[,"Attrition"]
-Train_set$Attrition <- NULL
-x=as.matrix(Train_set)
+rftrain=newtrain
+logtrain=newtrain
+
+newtrain$Attrition=as.numeric(factor(newtrain$Attrition),levels=levels(newtrain$Attrition))-1
+
+dim(newtrain)
+
+glimpse(newtrain)
+
+object.size(newtrain)
+
+
+##xgboost trainset prep
+
+tr_labels=newtrain[,"Attrition"]
+newtrain$Attrition <- NULL
+x=as.matrix(newtrain)
 x=matrix(as.numeric(x),nrow(x),ncol(x))
 dtrain=xgb.DMatrix(data=x,label=tr_labels,missing = NA)
 
-tv_labels=Validate_set[,"Attrition"]
-Validate_set$Attrition<-NULL
-v=as.matrix(Validate_set)
-v=matrix(as.numeric(v),nrow(v),ncol(y))
-dvalidate=xgb.DMatrix(data=v,label=tv_labels,missing = NA)
+dim(dtrain)
 
 
 actual_labels=Test_set[,"Attrition"]
 Test_set$Attrition <-NA
 head(Test_set)
+rftest=Test_set
+lrtest=Test_set
+
+
+##xgboost testset prep
+
 ts_labels=Test_set[,"Attrition"]
 Test_set$Attrition <-NULL
-
 dtest=xgb.DMatrix(data=as.matrix(Test_set),label=ts_labels,missing = NA)
+
+dim(dtest)
 
 param=list(booster="gblinear",
            objective="binary:logistic",
@@ -149,7 +190,7 @@ param=list(booster="gblinear",
            lambda_bias=0,
            alpha=2)
 
-watch=list(train=dtrain,test=dvalidate)
+watch=list(train=dtrain,test=dtest)
 set.seed(115)
 ##fitcv=xgb.cv(params = param,
             ## data=dtrain,
@@ -168,25 +209,65 @@ xgb_mod1=xgb.train(params = param,
                    nrounds = 600,
                    verbose = 1)
 
+out=output.capture(xgb_mod1)
+write.csv(out,"E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\xgbmodelOut.csv")
 
 ##making predictions on unseen data
+finalpred=predict(xgb_mod1,newdata=dtest)
+length(finalpred)
+res.roc2=roc(actual_labels,finalpred)
+plot.roc(res.roc2,print.auc = TRUE,print.thres = "best")
+auc(res.roc2)
+t2=coords(res.roc2,"best","threshold",transpose=FALSE)
+thresh=t2[1,1]
+finalpred_classes=ifelse(finalpred>thresh,1,0)
+mydf=data.frame(predicted=finalpred_classes,actuals=actual_labels)
+table(mydf$predicted,mydf$actuals)
 
-pred=predict(xgb_mod1,newdata=dvalidate)
 
-length(pred)
+##random forest prep
 
-## creating roc /auc and making class predictions based on best threshold
-res.roc=roc(tv_labels,pred)
+rftrain$Attrition=make.names(rftrain$Attrition)
+trcontrolobj=trainControl(method="cv",verboseIter = TRUE,classProbs = TRUE,summaryFunction = twoClassSummary)
+tgrid=expand.grid(.mtry=c(2,4,8,15))
 
-plot.roc(res.roc,print.auc = TRUE,print.thres = "best")
-t=coords(res.roc,"best","threshold",transpose = FALSE)
-thresh=t[1]
-auc(res.roc)
+rf_mod1=train(Attrition ~.,
+              data=rftrain,
+              method="rf",
+              metric="ROC",
+              trControl=trcontrolobj,
+              verbose=T)
 
-pred_classes=ifelse(pred>thresh,1,0)
+pred_rf=predict(rf_mod1,newdata=rftest,type="raw")
+length(pred_rf)
+mydf=data.frame(predicted=pred_rf,actuals=actual_labels)
+table(mydf$predicted,mydf$actuals)
+pred_rfRoc=ifelse(pred_rf=="X1",1,0)
+res.roc3=roc(actual_labels,pred_rfRoc)
+auc(res.roc3)
 
-finaldf=data.frame(predicted=pred_classes,actuals=tv_labels)
-table(finaldf$predicted,finaldf$actuals)
+
+##logistic regression for 0/1 classification
+
+logi_mod1=glm(Attrition ~ .,data=logtrain,family = binomial)
+summary(logi_mod1)
+
+pred_lr=predict(logi_mod1,newdata = lrtest,type="response")
+length(pred_lr)
+
+
+res.roc4=roc(actual_labels,pred_lr)
+plot.roc(res.roc3,print.auc = TRUE,print.thres = "best")
+auc(res.roc4)
+t3=coords(res.roc4,"best","threshold",transpose=FALSE)
+thresh=t3[1,1]
+finalpred_classes_lr=ifelse(finalpred>thresh,1,0)
+mydf=data.frame(predicted=finalpred_classes_lr,actuals=actual_labels)
+table(mydf$predicted,mydf$actuals)
+
+
+
+
 
 
 
