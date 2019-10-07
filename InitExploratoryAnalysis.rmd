@@ -1,0 +1,299 @@
+---
+title: "ExploratoryDataAnalysis for employee attrition"
+author: "Abhinav B."
+date: "06-Sep-2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE,fig.width = 12,fig.height = 8)
+```
+
+## R Markdown report for IBM HR employee attrition dataset
+
+
+```{r lib_load,echo=FALSE,results="hide",include=FALSE}
+library(caret)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(caTools)
+library(reshape2)
+library(gbm)
+library(caTools)
+library(randomForest)
+library(ggplot2)
+library(data.table)
+library(xgboost)
+library(Matrix)
+library(lightgbm)
+library(TeachingDemos)
+library(Hmisc)
+library(DMwR)
+library(e1071)
+library(glmnet)
+library(pROC)
+```
+
+#Load the employee data set
+```{r loaddata,echo=TRUE,results="hide"}
+rm(list = ls())
+empdata_orig=fread("E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\ibm-hr-analytics-employee-attrition-performance\\WA_Fn-UseC_-HR-Employee-Attrition.csv",
+                   data.table = FALSE,
+                   colClasses =c("integer","factor","factor","integer","factor","integer","factor","factor","integer","integer",                                  
+                                 "factor","factor","integer","factor","factor","factor","factor","factor","integer","integer",
+                                 "integer","factor","factor","integer","factor","factor","integer","factor","integer","integer",
+                                 "factor","integer","integer","integer","integer" ))
+
+
+
+empdata=empdata_orig
+```
+
+## Lets check out the data and class of each column 
+```{r chunk2 ,echo=TRUE}
+
+glimpse(empdata)
+t(sapply(empdata,class))
+
+```
+#### create age group from age field
+```{r chunk3 ,echo=TRUE}
+empdata$AgeGroups=as.factor(ifelse(empdata$Age<=24,"Young",ifelse((empdata$Age>24 & empdata$Age<=54),"Middle Aged","Senior Citizen")))
+table(empdata$AgeGroups)
+```
+##### Graph showing total count agegroupwise -figure
+```{r chunk4}
+empdata %>% ggplot(aes(x=empdata$AgeGroups))+geom_histogram(stat = "count")
+``` 
+#### Age group wise count with Attrition and non attrition employees-figure
+```{r chunk5}
+empdata %>% ggplot(aes(x=empdata$AgeGroups))+geom_histogram(aes(color=empdata$Attrition),stat = "count",fill="white")
+```
+#We can also analyse this with side-by-side bar chart-figure
+```{r chunk6}
+empdata %>% ggplot(aes(x=empdata$AgeGroups))+geom_bar(aes(fill=empdata$Attrition),position = position_dodge(),color="black")
+```
+##Business travel wise count with attrition and non attrition employees 
+```{r chunk7}
+table(empdata$BusinessTravel)
+e2=empdata %>% group_by(empdata$BusinessTravel,empdata$Attrition) %>% summarise(count=n())
+e2
+empdata %>% ggplot(aes(x=empdata$BusinessTravel))+geom_bar(aes(fill=empdata$Attrition),position=position_dodge(),color="black")
+```
+We see that "TravelFrequently" has a propensity towards attrition  
+## Education level wise breakup 
+
+```{r chunk8}
+unique(empdata$Education)
+empdata %>% ggplot(aes(x=empdata$EducationField))+geom_bar(aes(fill=empdata$Attrition),position = position_dodge(),color="black")+coord_flip()
+```
+
+## department wise breakup of attrition of employees 
+```{r chunk9}
+table(empdata$Department)
+rm(e3)
+e3=empdata %>% group_by(empdata$Department,empdata$Attrition) %>% summarise(count=n()) %>% mutate(grp_pct=count/sum(count)*100)
+e3
+empdata %>% ggplot(aes(x=empdata$Department))+geom_bar(aes(fill=empdata$Attrition),position = position_dodge(),color="blue")+coord_flip()
+```
+
+##overtime and attrition relationship with facet of gender hence 2 graphs
+```{r chunk10}
+empdata %>% ggplot(aes(x=empdata$OverTime))+geom_bar(aes(fill=empdata$Attrition),position = position_dodge(),color="grey")+facet_grid(empdata$Gender~.)
+```
+#### Check for missing values in the dataset  
+
+```{r chunk11}
+colnames(empdata)[colSums(is.na(empdata)>0)]
+```
+No missing values in the dataset ,so we don't have to worry about imputing
+
+#### check for zero variance
+
+```{r chunk12}
+k=lapply(empdata,function(x) {length(unique(x))})
+w=which(!k>1)
+names(w)
+```
+So, will remove these columns from our analysis
+
+```{r chunk13}
+empdata=empdata[,-which(names(empdata) %in% names(w))]
+dim(empdata)
+```
+Adding a few features 
+```{r chunk15,echo=TRUE,results="hide"}
+empdata$TotalSatisfaction=as.numeric(empdata$EnvironmentSatisfaction)+as.numeric(empdata$JobInvolvement)+as.numeric(empdata$JobSatisfaction)+as.numeric(empdata$RelationshipSatisfaction)+as.numeric(empdata$WorkLifeBalance)
+
+summary(empdata$TotalSatisfaction)
+##Adding Low or High Income indicator if Monthly income less or greater than mean
+empdata$IncomeInd=as.factor(ifelse(empdata$MonthlyIncome<mean(empdata$MonthlyIncome),"Low","High"))
+empdata$IncomeInd=as.numeric(factor(empdata$IncomeInd),levels=levels(empdata$IncomeInd))-1
+##dropping unique column as its not useful for modelling
+empdata=empdata[,-which(names(empdata) %in% c("EmployeeNumber"))]
+glimpse(empdata)
+```
+
+Since many ML algorithms donot work well with factor/categorical variables,hence converting to one hot encoded
+```{r chunk14,echo=TRUE,results="hide"}
+
+dmy=dummyVars("Attrition ~ . ",data=empdata)
+tnsf=data.frame(predict(dmy,newdata=empdata))
+empdata$Attrition=as.numeric(factor(empdata$Attrition),levels=levels(empdata$Attrition))-1
+tnsf$Attrition=empdata$Attrition
+glimpse(tnsf)
+empdata=tnsf
+```
+
+XGBoost train and test set preparation
+```{r chunk16,include=FALSE}
+set.seed(115)
+##breaking data into Train+validate and TEST sets
+splitt1=sample.split(empdata$Attrition,SplitRatio = 0.6)
+Train_set=subset(empdata,splitt1==TRUE)
+Test_set=subset(empdata,splitt1==FALSE)
+nrow(Train_set)+nrow(Test_set)
+## should be = 1470
+table(Train_set$Attrition)
+table(Test_set$Attrition)
+newtrain=Train_set
+rftrain=Train_set
+logtrain=Train_set
+actual_labels=Test_set[,"Attrition"]
+Test_set$Attrition <-NA
+head(Test_set)
+rftest=Test_set
+lrtest=Test_set
+##xgboost trainset prep
+
+tr_labels=newtrain[,"Attrition"]
+newtrain$Attrition <- NULL
+x=as.matrix(newtrain)
+x=matrix(as.numeric(x),nrow(x),ncol(x))
+dtrain=xgb.DMatrix(data=x,label=tr_labels,missing = NA)
+dim(dtrain)
+
+##xgboost testset prep
+
+ts_labels=Test_set[,"Attrition"]
+Test_set$Attrition <-NULL
+dtest=xgb.DMatrix(data=as.matrix(Test_set),label=ts_labels,missing = NA)
+dim(dtest)
+param=list(booster="gblinear",
+           objective="binary:logistic",
+           eval_metric="auc",
+           eta=0.01,
+           lambda=5,
+           lambda_bias=0,
+           alpha=2)
+
+watch=list(train=dtrain,test=dtest)
+```
+Fitting an xgboost model to training dataset
+```{r chunk17,echo=TRUE,results="hide"}
+set.seed(111)
+xgb_mod1=xgb.train(params = param,
+                   data=dtrain,
+                   watchlist = watch,
+                   nrounds = 600,
+                   verbose = 1)
+```
+Now making prediction on unseen data and plotting AUC
+```{r chunk18,echo=TRUE}
+##making predictions on unseen data
+finalpred=predict(xgb_mod1,newdata=dtest,type="prob")
+length(finalpred)
+res.rocxg=roc(actual_labels,finalpred)
+plot.roc(res.rocxg,print.auc = TRUE,print.thres = "best")
+pROC::auc(res.rocxg)
+```
+As we can see we the AUC to be approximately `r sprintf("%.2f",pROC::auc(res.rocxg)) ` with xgboost
+
+## Random Forest 
+```{r chunk19,include=FALSE}
+rftrain$Attrition=make.names(rftrain$Attrition)
+rftrain$Attrition=as.factor(rftrain$Attrition)
+trcontrolobj=trainControl(method="cv",verboseIter = TRUE,classProbs = TRUE,summaryFunction = twoClassSummary)
+tgrid=expand.grid(.mtry=c(2,4,8,15))
+set.seed(111)
+```
+Fitting a random forest model and making prediction on the test set
+```{r chunk20,echo=TRUE,results="hide"}
+rf_mod1=train(Attrition ~.,
+              data=rftrain,
+              method="rf",
+              metric="ROC",
+              trControl=trcontrolobj,
+              verbose=T)
+pred_rf=predict(rf_mod1,newdata=rftest,type="raw")
+length(pred_rf)
+mydf=data.frame(predicted=pred_rf,actuals=actual_labels)
+table(mydf$predicted,mydf$actuals)
+pred_rfRoc=ifelse(pred_rf=="X1",1,0)
+res.rocrf=roc(actual_labels,pred_rfRoc)
+```
+plotting the auc obtained from the randomforest model
+```{r chunk21,echo=TRUE}
+plot.roc(res.rocrf,print.auc = TRUE,print.thres = "best")
+pROC::auc(res.rocrf)
+```
+So here are the results,an auc of `r sprintf("%.2f",pROC::auc(res.rocrf))` with random forest model.  
+Let's checkout the important variables identified by random forest 
+```{r chunk22,echo=TRUE}
+a=varImp(rf_mod1)
+plot(a,top=20)
+```
+As we can see monthly income,overtime,Age,Distance from home are identified as important factors in when an employee decides to leave the company
+
+## Logistic regression
+
+First we will use logistic regression model to do *Feature Selection* and then make a refined LR model and check accuracy and AUC.  
+Initial LR model
+```{r chunk23,echo=TRUE,results="hide"}
+set.seed(111)
+dim(empdata)
+logtrain=Train_set
+prop.table(table(logtrain$Attrition))
+logi_mod1=glm(Attrition ~ .,data=logtrain,family = binomial)
+summary(logi_mod1)
+```
+Lets check the important variables indicated by this model
+```{r chunk24,echo=TRUE}
+imp=varImp(logi_mod1)
+print(imp)
+```
+Now, we will create a refined trainset,using just the important variables
+
+```{r chunk25,echo=TRUE,results="hide"}
+logtrain_refined=logtrain[,which(names(logtrain) %in% c(rownames(imp),"Attrition"))]
+dim(logtrain_refined)
+dim(lrtest)
+lrtest_refined=lrtest[,which(names(lrtest) %in% c(rownames(imp)))]
+logi_mod2=glm(Attrition ~.,data=logtrain_refined,family = binomial)
+summary(logi_mod2)
+pred_lr=predict(logi_mod2,newdata = lrtest_refined,type="response")
+length(pred_lr)
+res.roclr=roc(actual_labels,pred_lr)
+t2=coords(res.rocxg,"best","threshold",transpose=FALSE)
+thresh=t2[1,1]
+finalpred_classes=ifelse(finalpred>thresh,1,0)
+```
+Checking the results of this refined variable set model
+```{r chunk26,echo=TRUE}
+pROC::auc(res.roclr)
+plot.roc(res.roclr,print.auc = TRUE,print.thres = "best")
+confusionMatrix(as.factor(finalpred_classes),as.factor(actual_labels))
+```
+Lets do a model comparison now...coming soon..
+
+
+
+
+
+
+
+
+
+
+
