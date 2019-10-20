@@ -27,7 +27,7 @@ options(scipen = 999)
 rm(list = ls())
 gc()
 
-startime=Sys.time()
+starttime=Sys.time()
 
 flattenCorrMatrix <- function(cormat, pmat) {
   ut <- upper.tri(cormat)
@@ -61,6 +61,11 @@ lift <- function(depvar, predcol, groups=10) {
            Gain=Cumresp/sum(totalresp)*100,
            Cumlift=Gain/(bucket*(100/groups)))
   return(gaintable)
+}
+
+costfunc <- function(FN,FP,Weight=10){
+  cal_cost=round((FP+(Weight*FN))/nrow(Test_set),3)
+  return(cal_cost)
 }
 
 empdata_orig=fread("E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\ibm-hr-analytics-employee-attrition-performance\\WA_Fn-UseC_-HR-Employee-Attrition.csv",
@@ -169,12 +174,7 @@ a
 rowSums(is.na(empdata))
 rowSums((is.na(lrdata)))
 
-
-
-
-
 set.seed(115)
-
 ##breaking data into Train+validate and TEST sets
 splitt1=sample.split(empdata$Attrition,SplitRatio = 0.6)
 Train_set=subset(empdata,splitt1==TRUE)
@@ -318,10 +318,15 @@ xgb_mod1=xgb.train(params = param,
 pred_xg=predict(xgb_mod1,newdata=dtest,type="prob")
 length(pred_xg)
 res.rocxg=roc(response=actual_labels,predictor=pred_xg,positive=1)
-t2=coords(res.rocxg,x="best",ret="threshold",transpose=FALSE,best.weights = c(10,0.20))
+##with different weights: best.weights = c(Cost of FN, Prevalence) default-prevalence is 0.5 and cost is 1 so that no weight is applied in effect.
+t2=coords(res.rocxg,x="best",ret="threshold",transpose=FALSE,best.weights = c(5,0.16))
 thresh=t2
 finalpred_classes=ifelse(pred_xg>thresh,1,0)
-confusionMatrix(as.factor(finalpred_classes),as.factor(actual_labels),positive = "1")
+cm=confusionMatrix(as.factor(finalpred_classes),as.factor(actual_labels))
+fnxg=cm$table[1,2]
+fpxg=cm$table[2,1]
+costxg=costfunc(fnxg,fpxg)
+print(costxg)
 pROC::auc(res.rocxg)
 plot.roc(res.rocxg,print.auc = TRUE,print.thres = "best")
 
@@ -345,14 +350,20 @@ pred_rf_classes=predict(rf_mod1,newdata=rftest,type="raw")
 pred_rf_classes=ifelse(pred_rf_classes=="X1",1,0)
 confusionMatrix(as.factor(pred_rf_classes),as.factor(actual_labels))
 
+
 pred_rf=predict(rf_mod1,newdata=rftest,type="prob")
 length(pred_rf)
 ##pred_rfRoc=ifelse(pred_rf$X1>pred_rf$X0,1,0)
 res.rocrf=roc(response=actual_labels,predictor=pred_rf$X1)
-t3=coords(res.rocrf,x="best",ret = "threshold",transpose=FALSE,best.weights = c(10,0.19))
+##with different weights: best.weights = c(Cost of FN, Prevalence) default-prevalence is 0.5 and cost is 1 so that no weight is applied in effect.
+t3=coords(res.rocrf,x="best",ret = "threshold",transpose=FALSE,best.weights = c(5,0.16))
 thresh=t3
 finalpred_classes_rf=ifelse(pred_rf$X1>thresh,1,0)
-confusionMatrix(as.factor(finalpred_classes_rf),as.factor(actual_labels))
+cm=confusionMatrix(as.factor(finalpred_classes_rf),as.factor(actual_labels))
+fnrf=cm$table[1,2]
+fprf=cm$table[2,1]
+costrf=costfunc(fnrf,fprf)
+print(costrf)
 plot.roc(res.rocrf,print.auc = TRUE,print.thres = "best")
 pROC::auc(res.rocrf)
 
@@ -384,11 +395,16 @@ length(pred_lr)
 ##Back to finding threshold as per customer cost function FP=1 and FN=10 Cost func=(FP+10FN)/N
 res.roclr=roc(response=actual_labels,predictor=pred_lr,positive=1)
 pROC::auc(res.roclr)
-t4=coords(res.roclr,x="best",ret = "threshold",transpose=FALSE,best.weights = c(10,0.19))
+##with different weights: best.weights = c(Cost of FN, Prevalence) default-prevalence is 0.5 and cost is 1 so that no weight is applied in effect.
+t4=coords(res.roclr,x="best",ret = "threshold",transpose=FALSE,best.weights = c(5,0.16))
 thresh=t4
 print(thresh)
 finalpred_classes_lr=ifelse(pred_lr>thresh,1,0)
-confusionMatrix(as.factor(finalpred_classes_lr),as.factor(actual_labels))
+cm=confusionMatrix(as.factor(finalpred_classes_lr),as.factor(actual_labels))
+fnlr=cm$table[1,2]
+fplr=cm$table[2,1]
+costlr=costfunc(fnlr,fplr)
+print(costlr)
 plot.roc(res.roclr,print.auc = TRUE,print.thres = "best")
 
 ##Lift analysis on the predictions from logistic regression 
@@ -397,18 +413,19 @@ print(dt)
 plot(dt$bucket, dt$Cumlift, type="l", ylab="Cumulative lift", xlab="Bucket")
 write.csv(dt,"E:\\AbhinavB\\Kaggle\\IBM HR Analytics Employee Attrition\\liftanalysis.csv",row.names=FALSE)
 
-pROC::auc(res.rocxg)
-pROC::auc(res.rocrf)
-pROC::auc(res.roclr)
-
-
-
 ##Weighthed average of previous models 
 pred_wtd_avg=((0.6*pred_lr)+ (0.3*(pred_rf$X1))+(0.1*pred_xg))/3
 
 res.rocavg=roc(actual_labels,pred_wtd_avg)
+
+pROC::auc(res.rocxg)
+pROC::auc(res.rocrf)
+pROC::auc(res.roclr)
 pROC::auc(res.rocavg)
 
+print(costxg)
+print(costrf)
+print(costlr)
 
 plot(res.rocxg,ylim = c(0,1),print.thres=T,print.thres.cex=0.8,main="ROC Curves",col="blue")
 plot(res.rocrf,ylim = c(0,1),print.thres=T,print.thres.cex=0.8,col="green",add=T)
