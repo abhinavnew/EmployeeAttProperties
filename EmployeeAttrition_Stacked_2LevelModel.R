@@ -325,8 +325,9 @@ finalpred_classes=ifelse(pred_xg>thresh,1,0)
 cm=confusionMatrix(as.factor(finalpred_classes),as.factor(actual_labels))
 fnxg=cm$table[1,2]
 fpxg=cm$table[2,1]
+accxg=cm$overall[1]
 costxg=costfunc(fnxg,fpxg)
-print(costxg)
+
 pROC::auc(res.rocxg)
 plot.roc(res.rocxg,print.auc = TRUE,print.thres = "best")
 
@@ -360,6 +361,7 @@ t3=coords(res.rocrf,x="best",ret = "threshold",transpose=FALSE,best.weights = c(
 thresh=t3
 finalpred_classes_rf=ifelse(pred_rf$X1>thresh,1,0)
 cm=confusionMatrix(as.factor(finalpred_classes_rf),as.factor(actual_labels))
+accrf=cm$overall[1]
 fnrf=cm$table[1,2]
 fprf=cm$table[2,1]
 costrf=costfunc(fnrf,fprf)
@@ -401,6 +403,7 @@ thresh=t4
 print(thresh)
 finalpred_classes_lr=ifelse(pred_lr>thresh,1,0)
 cm=confusionMatrix(as.factor(finalpred_classes_lr),as.factor(actual_labels))
+acclr=cm$overall[1]
 fnlr=cm$table[1,2]
 fplr=cm$table[2,1]
 costlr=costfunc(fnlr,fplr)
@@ -418,14 +421,19 @@ pred_wtd_avg=((0.6*pred_lr)+ (0.3*(pred_rf$X1))+(0.1*pred_xg))/3
 
 res.rocavg=roc(actual_labels,pred_wtd_avg)
 
-pROC::auc(res.rocxg)
-pROC::auc(res.rocrf)
-pROC::auc(res.roclr)
-pROC::auc(res.rocavg)
+cat("cost of xgboost model is =",costxg)
+cat("Accuracy of xgboost model is=",accxg)
+cat("AUC of xgboost model is=",pROC::auc(res.rocxg))
 
-print(costxg)
-print(costrf)
-print(costlr)
+cat("cost of RF model is =",costrf)
+cat("Accuracy of RF model is=",accrf)
+cat("AUC of RF model is=",pROC::auc(res.rocrf))
+
+cat("cost of LR model is =",costlr)
+cat("Accuracy of LR model is=",acclr)
+cat("AUC of LR model is=",pROC::auc(res.roclr))
+
+cat("AUC of Weighted average model is =",pROC::auc(res.rocavg))
 
 plot(res.rocxg,ylim = c(0,1),print.thres=T,print.thres.cex=0.8,main="ROC Curves",col="blue")
 plot(res.rocrf,ylim = c(0,1),print.thres=T,print.thres.cex=0.8,col="green",add=T)
